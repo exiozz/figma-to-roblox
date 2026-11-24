@@ -23,6 +23,9 @@
   .stat { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); }
   .stat:last-child { border:0; }
   .stat span:first-child { color:var(--muted); }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 10px; }
+  code { display:block; padding:8px 10px; border-radius:7px; background:var(--bg); border:1px solid var(--line); font:12px Consolas, monospace; overflow-wrap:anywhere; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:4px; background:var(--line); color:var(--muted); margin-right:6px; }
   #log { margin:0; max-height:180px; overflow:auto; font:12px/1.5 Consolas, monospace; color:var(--muted); white-space:pre-wrap; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--err); }
   .dot.on { background:var(--ok); }
@@ -49,9 +52,18 @@
   </div>
 
   <div class="card">
+    <h2>Dossier d'envoi</h2>
+    <p class="hint">Dépose ici des images (.png .jpg .bmp .tga) ou des modèles 3D (.fbx .glb .gltf .rbxm .rbxmx) :
+      ils sont mis en ligne tout seuls, puis rangés dans « Envoyés ».</p>
+    <code id="dropDir">…</code>
+    <div class="row"><button id="openFolder" class="ghost">Ouvrir le dossier</button></div>
+  </div>
+
+  <div class="card">
     <h2>Activité</h2>
-    <div class="stat"><span>Dernier design reçu</span><span id="last">—</span></div>
-    <div class="stat"><span>Images en cache</span><span id="cached">0</span></div>
+    <div class="stat"><span>Dernier design Figma</span><span id="last">—</span></div>
+    <div class="stat"><span>Fichiers en cache</span><span id="cached">0</span></div>
+    <div id="recent"></div>
   </div>
 
   <div class="card">
@@ -78,6 +90,20 @@
       $("keyHint").textContent = s.keyMasked ? `(actuelle : ${s.keyMasked})` : "";
       $("last").textContent = s.last ? `${s.last.name} · v${s.last.version} · ${new Date(s.last.at).toLocaleTimeString()}` : "—";
       $("cached").textContent = s.cached;
+      $("dropDir").textContent = s.dropDir;
+      $("recent").replaceChildren(...s.recent.map((a) => {
+        const row = document.createElement("div");
+        row.className = "stat";
+        const left = document.createElement("span");
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = a.kind === "model" ? "Modèle" : "Image";
+        left.append(tag, `${a.name} · ${a.source}`);
+        const right = document.createElement("span");
+        right.textContent = a.assetId;
+        row.append(left, right);
+        return row;
+      }));
       $("log").textContent = s.log.join("\n");
       if (first) { $("ctype").value = s.groupId ? "group" : "user"; $("cid").value = s.groupId || s.userId || ""; }
     } catch { $("dot").className = "dot"; $("state").textContent = "Serveur arrêté"; }
@@ -98,6 +124,8 @@
     catch (e) { say(e.message, "err"); }
     $("test").disabled = false;
   };
+
+  $("openFolder").onclick = () => api("/open-folder", {}).catch((e) => say(e.message, "err"));
 
   refresh(true);
   setInterval(refresh, 2000);

@@ -25,7 +25,11 @@
     const count = Object.keys(msg.payload.images).length;
     show(`Envoi au serveur local (${count} image(s) à mettre en ligne)…`);
     try {
-      const res = await fetch(BRIDGE + "/push", { method: "POST", body: JSON.stringify(msg.payload) });
+      const res = await fetch(BRIDGE + "/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-FigmaRoblox": "1" },
+        body: JSON.stringify(msg.payload),
+      });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || res.statusText);
       show(`Prêt ! (${body.uploaded} nouvelle(s) image(s) envoyée(s))\nDans Studio : bouton « Importer depuis Figma ».`);

@@ -1,10 +1,13 @@
--- Figma → Roblox : importe le dernier design envoyé par le plugin Figma (via le pont local).
+-- FigmaRoblox : importe dans Studio ce qui a été envoyé à l'application locale
+--   • « Importer depuis Figma »         → le dernier design Figma, en ScreenGui
+--   • « Importer modèles et images »    → les modèles 3D (Blender, dossier) et images (dossier)
 local HttpService = game:GetService("HttpService")
+local InsertService = game:GetService("InsertService")
 local StarterGui = game:GetService("StarterGui")
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
-local BRIDGE = "http://localhost:7777/latest"
+local BRIDGE = "http://localhost:7777"
 
 -- Polices Figma → familles Roblox les plus proches.
 local FAMILIES = {
@@ -34,37 +37,6 @@ local WEIGHTS = {
 
 local ALIGN_X = { LEFT = Enum.TextXAlignment.Left, CENTER = Enum.TextXAlignment.Center, RIGHT = Enum.TextXAlignment.Right, JUSTIFIED = Enum.TextXAlignment.Left }
 local ALIGN_Y = { TOP = Enum.TextYAlignment.Top, CENTER = Enum.TextYAlignment.Center, BOTTOM = Enum.TextYAlignment.Bottom }
-
--- Open Cloud crée des Decals ; un ImageLabel a besoin de l'image qu'ils contiennent.
-local InsertService = game:GetService("InsertService")
-local imageCache = plugin:GetSetting("DecalToImage") or {}
-
-local function decalToImage(uri)
-	local id = uri:match("%d+")
-	if imageCache[id] then
-		return imageCache[id]
-	end
-	local ok, model = pcall(InsertService.LoadAsset, InsertService, tonumber(id))
-	if not ok then
-		warn("[Figma] Image " .. id .. " pas encore disponible (modération ?) : " .. tostring(model))
-		return uri
-	end
-	local decal = model:FindFirstChildWhichIsA("Decal", true)
-	local image = decal and decal.Texture or uri
-	model:Destroy()
-	imageCache[id] = image
-	plugin:SetSetting("DecalToImage", imageCache)
-	return image
-end
-
-local function resolveImages(node)
-	if node.kind == "image" then
-		node.image = decalToImage(node.image)
-	end
-	for _, child in ipairs(node.children or {}) do
-		resolveImages(child)
-	end
-end
 
 local function color(c)
 	return Color3.fromRGB(c[1], c[2], c[3])
@@ -164,41 +136,139 @@ local function build(node)
 	return gui
 end
 
-local function import()
-	local ok, body = pcall(HttpService.GetAsync, HttpService, BRIDGE, true)
+local function fetch(route)
+	local ok, body = pcall(HttpService.GetAsync, HttpService, BRIDGE .. route, true)
 	if not ok then
-		warn("[Figma] Pont local injoignable. Lance « node bridge.js ». Détail : " .. tostring(body))
+		warn("[FigmaRoblox] Application injoignable : lance FigmaRoblox.exe. Détail : " .. tostring(body))
+		return nil
+	end
+	return HttpService:JSONDecode(body)
+end
+
+local function withUndo(name, fn)
+	local recording = ChangeHistoryService:TryBeginRecording(name)
+	fn()
+	if recording then
+		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+	end
+end
+
+local function import()
+	local data = fetch("/latest")
+	if not data then
 		return
 	end
-	local data = HttpService:JSONDecode(body)
 	if not data.tree then
 		warn("[Figma] Rien à importer : envoie d'abord un frame depuis le plugin Figma.")
 		return
 	end
 
-	resolveImages(data.tree)
+	withUndo("Importer depuis Figma", function()
+		local screen = Instance.new("ScreenGui")
+		screen.Name = data.name
+		screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		screen.ResetOnSpawn = false
 
-	local recording = ChangeHistoryService:TryBeginRecording("Importer depuis Figma")
-	local screen = Instance.new("ScreenGui")
-	screen.Name = data.name
-	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screen.ResetOnSpawn = false
-
-	local root = build(data.tree)
-	-- Racine centrée en haut de l'écran ; à repositionner librement ensuite.
-	root.AnchorPoint = Vector2.new(0.5, 0)
-	root.Position = UDim2.new(0.5, 0, 0, 20)
-	root.Parent = screen
-	screen.Parent = StarterGui
-
-	Selection:Set({ root })
-	if recording then
-		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-	end
-	print(("[Figma] « %s » importé (v%d) dans StarterGui."):format(data.name, data.version))
+		local root = build(data.tree)
+		-- Racine centrée en haut de l'écran ; à repositionner librement ensuite.
+		root.AnchorPoint = Vector2.new(0.5, 0)
+		root.Position = UDim2.new(0.5, 0, 0, 20)
+		root.Parent = screen
+		screen.Parent = StarterGui
+		Selection:Set({ root })
+	end)
+	print(("[FigmaRoblox] « %s » importé (v%d) dans StarterGui."):format(data.name, data.version))
 end
 
-local toolbar = plugin:CreateToolbar("Figma")
-local button = toolbar:CreateButton("Importer depuis Figma", "Importe le dernier frame envoyé depuis Figma", "rbxassetid://4458901886")
-button.ClickableWhenViewportHidden = true
-button.Click:Connect(import)
+-- Modèles et images : on n'importe que ce qui est arrivé depuis le dernier import.
+local LAST_ID_SETTING = "LastImportedAssetId"
+
+-- Point devant la caméra, posé sur ce qu'elle regarde (sol, décor) si possible.
+local function dropPoint()
+	local cam = workspace.CurrentCamera
+	local origin = cam.CFrame.Position
+	local hit = workspace:Raycast(origin, cam.CFrame.LookVector * 200)
+	return hit and hit.Position or (origin + cam.CFrame.LookVector * 20)
+end
+
+local function insertModel(asset)
+	local ok, container = pcall(InsertService.LoadAsset, InsertService, tonumber(asset.assetId))
+	if not ok then
+		warn(("[FigmaRoblox] Modèle « %s » (%s) pas encore disponible : %s"):format(asset.name, asset.assetId, tostring(container)))
+		return nil
+	end
+	-- LoadAsset renvoie un conteneur : on garde son contenu, regroupé dans un Model au nom de l'asset.
+	local model = Instance.new("Model")
+	model.Name = asset.name
+	for _, child in ipairs(container:GetChildren()) do
+		child.Parent = model
+	end
+	container:Destroy()
+	-- Posé sur le point visé, le bas du modèle au niveau du sol.
+	local cf, size = model:GetBoundingBox()
+	local target = dropPoint()
+	model:PivotTo(model:GetPivot() + (target - cf.Position) + Vector3.new(0, size.Y / 2, 0))
+	model.Parent = workspace
+	return model
+end
+
+local function insertImage(asset)
+	local screen = StarterGui:FindFirstChild("Images importées")
+	if not screen then
+		screen = Instance.new("ScreenGui")
+		screen.Name = "Images importées"
+		screen.Enabled = false -- visible dans l'éditeur seulement en l'activant ; sert de réserve d'images
+		screen.Parent = StarterGui
+		local grid = Instance.new("UIGridLayout")
+		grid.CellSize = UDim2.fromOffset(160, 160)
+		grid.Parent = screen
+	end
+	local label = Instance.new("ImageLabel")
+	label.Name = asset.name
+	label.Image = "rbxassetid://" .. asset.assetId
+	label.ScaleType = Enum.ScaleType.Fit
+	label.BackgroundTransparency = 1
+	label.Parent = screen
+	return label
+end
+
+local function importAssets()
+	local after = plugin:GetSetting(LAST_ID_SETTING) or 0
+	local data = fetch("/assets?after=" .. after)
+	if not data then
+		return
+	end
+	if #data.assets == 0 then
+		print("[FigmaRoblox] Rien de nouveau : envoie un modèle depuis Blender ou dépose un fichier dans le dossier d'envoi.")
+		return
+	end
+
+	local created = {}
+	local blocked = false
+	withUndo("Importer modèles et images", function()
+		for _, asset in ipairs(data.assets) do
+			local inst = asset.kind == "model" and insertModel(asset) or insertImage(asset)
+			if inst then
+				table.insert(created, inst)
+				print(("[FigmaRoblox] %s « %s » importé (rbxassetid://%s)."):format(
+					asset.kind == "model" and "Modèle" or "Image", asset.name, asset.assetId))
+			else
+				blocked = true -- on le retentera au prochain clic
+			end
+			if not blocked then
+				after = asset.id
+			end
+		end
+	end)
+	plugin:SetSetting(LAST_ID_SETTING, after)
+	Selection:Set(created)
+end
+
+local toolbar = plugin:CreateToolbar("FigmaRoblox")
+local figmaButton = toolbar:CreateButton("Importer depuis Figma", "Importe le dernier frame envoyé depuis Figma", "rbxassetid://4458901886")
+figmaButton.ClickableWhenViewportHidden = true
+figmaButton.Click:Connect(import)
+
+local assetsButton = toolbar:CreateButton("Importer modèles et images", "Importe les modèles (Blender, dossier) et images arrivés depuis le dernier import", "rbxassetid://4458901886")
+assetsButton.ClickableWhenViewportHidden = true
+assetsButton.Click:Connect(importAssets)
