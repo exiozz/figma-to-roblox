@@ -1,0 +1,1 @@
+﻿{ "main": "bridge.js", "output": "FigmaRoblox.exe", "disableExperimentalSEAWarning": true, "useCodeCache": false, "assets": { "panel.html": "panel.html" } }

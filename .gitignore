@@ -1,0 +1,11 @@
+# Binaire compilé : publié dans les Releases GitHub, pas dans le code.
+*.exe
+*.blob
+
+# Ne jamais publier ses réglages ni sa clé API.
+config.json
+upload-cache.json
+
+node_modules/
+.DS_Store
+Thumbs.db
